@@ -25,11 +25,19 @@ def fetch_gbif_data(url):
     response = requests.get(url)
     return response.json()
 
-# Function to create and update the progress dialog
-def create_progress_dialog(total_estimate):
-    progress = QProgressDialog("Gathering GBIF Points...", "Cancel", 0, total_estimate)
-    progress.setWindowModality(Qt.WindowModal)  # so user cannot interact with the map while loading
+# Function to create and update the progress dialog for GBIF data
+def create_progress_dialog(total_estimate, task_name="Fetching GBIF Points..."):
+    progress = QProgressDialog(task_name, "Cancel", 0, total_estimate)
+    progress.setWindowModality(Qt.WindowModal)  # Modal window so user cannot interact with the map while loading
     progress.setMinimumDuration(0)  # Show dialog immediately
+    progress.setValue(0)
+    return progress
+
+# Function to create and update the progress dialog for clipping
+def create_clipping_progress_dialog(total_count):
+    progress = QProgressDialog("Clipping features...", "Cancel", 0, total_count)
+    progress.setWindowModality(Qt.WindowModal)  # Modal window so user cannot interact with the map while clipping
+    progress.setMinimumDuration(0)
     progress.setValue(0)
     return progress
 
@@ -103,8 +111,8 @@ def create_gbif_layer(polygon, layer_id, progress):
                     return None, 0
 
                 progress.setValue(added_records)
-                progress.setLabelText(f"Gathering GBIF Points... {added_records} / {total_estimate}")
-                QCoreApplication.processEvents()  # allow UI updates
+                progress.setLabelText(f"Fetching GBIF Points... {added_records} / {total_estimate}")
+                QCoreApplication.processEvents()
 
         if len(data['results']) < 300:
             break
@@ -114,6 +122,10 @@ def create_gbif_layer(polygon, layer_id, progress):
 
 # function to clip the resulting gbif layer (from the query) with the active polygon(s) layer
 def clipping(input_layer, overlay_layer, layer_id):
+    # Create clipping progress dialog
+    total_features = len([f for f in input_layer.getFeatures()])
+    progress = create_clipping_progress_dialog(total_features)
+
     layer_clip = processing.run('qgis:clip',
         {'INPUT': input_layer,
         'OVERLAY': overlay_layer,
@@ -126,6 +138,21 @@ def clipping(input_layer, overlay_layer, layer_id):
     # count the number of results
     feature_count = len([f for f in layer_clip.getFeatures()])
     print(f"{feature_count} GBIF occurrences within polygon layer {layer_id} have been added to the map.")
+
+    # Update the clipping progress bar
+    progress.setMaximum(total_features)
+    progress.setValue(0)
+
+    feature_idx = 0
+    for feature in layer_clip.getFeatures():
+        feature_idx += 1
+        progress.setValue(feature_idx)
+        progress.setLabelText(f"Clipping features... {feature_idx} / {total_features}")
+        QCoreApplication.processEvents()
+
+        if progress.wasCanceled():
+            print("Script cancelled during clipping.")
+            return None
 
     return pyqgis_group.addLayer(layer_clip_result)
 
@@ -161,7 +188,8 @@ class LayerDialog(QDialog):
 
         self.map_layer_combo_box = QgsMapLayerComboBox()
         self.map_layer_combo_box.setCurrentIndex(-1)
-        self.map_layer_combo_box.setFilters(QgsMapLayerProxyModel.VectorLayer)
+        self.map_layer_combo_box.setFilters(QgsMapLayerProxyModel.PolygonLayer)
+
         layout = QFormLayout()
         layout.addWidget(self.map_layer_combo_box)
         self.setLayout(layout)
@@ -186,7 +214,6 @@ class LayerDialog(QDialog):
         if layer:
             return layer, layer.name()
         return None, None
-
 
 if warn_dialog.exec_() == QDialog.Accepted:
     print("Warning accepted. Querying GBIF API. Please be patient, this step can take a few minutes")
@@ -232,9 +259,19 @@ if warn_dialog.exec_() == QDialog.Accepted:
                 else:
                     result_layer, total_records = create_gbif_layer(geometry, layer_id, progress)
 
+                    if result_layer is None:
+                        print("Script cancelled during GBIF layer creation.")
+                        treeRoot.removeChildNode(pyqgis_group)  
+                        break
+
                     if total_records > 0:
                         # as long as there are some results, clip them to the active layer using the clipping function
                         clipping(result_layer, layer, layer_id)
+
+                if progress.wasCanceled():
+                    print("Script cancelled during main loop.")
+                    treeRoot.removeChildNode(pyqgis_group)  
+                    break
 
                 print("Script complete")
         else:
