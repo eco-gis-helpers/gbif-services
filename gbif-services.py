@@ -4,7 +4,9 @@ from qgis.core import (
     QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsFields
 )
 from qgis.PyQt.QtCore import QVariant
-from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox
+from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox, QFormLayout
+from qgis.gui import QgsMapLayerComboBox
+from qgis.core import QgsMapLayerProxyModel
 
 projInstance = QgsProject.instance()
 
@@ -18,8 +20,8 @@ while treeRoot.findGroup(group_name):
     group_name = 'GBIF Occurrences-' + str(counter)
 pyqgis_group = treeRoot.insertGroup(0, group_name)
 
-layer = iface.activeLayer()
-layer_name = layer.name()
+# layer = iface.activeLayer()
+# layer_name = layer.name()
 
 # Function to fetch GBIF data
 def fetch_gbif_data(url):
@@ -144,34 +146,86 @@ class WarningDialog(QDialog):
 warn_str = 'Please note large queries will take longer and may crash QGIS. \n A maximum of 100,000 records can be retrieved at one time.'
 warn_dialog = WarningDialog(warn_str)
 
+class LayerDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Select Layer for Query")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(100)
+
+        self.map_layer_combo_box = QgsMapLayerComboBox()
+        self.map_layer_combo_box.setCurrentIndex(-1)
+        self.map_layer_combo_box.setFilters(QgsMapLayerProxyModel.VectorLayer)
+        layout = QFormLayout()
+        layout.addWidget(self.map_layer_combo_box)
+        self.setLayout(layout)
+        self.show() 
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.validate_and_accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def validate_and_accept(self):
+        selected_layer = self.map_layer_combo_box.currentLayer()
+        if selected_layer:
+            self.accept()
+        else:
+            print("No layer selected!")
+            iface.messageBar().pushMessage("Error", "No layer selected!", level=Qgis.Critical)
+            raise ValueError("No layer selected!")
+
+    def get_selected_layer(self):
+        layer = self.map_layer_combo_box.currentLayer()
+        if layer:
+            return layer, layer.name()
+        return None, None
+
+
 if warn_dialog.exec_() == QDialog.Accepted:
     print("Warning accepted. Querying GBIF API. Please be patient, this step can take a few minutes")
-    
-    # Iterate through each polygon in the active layer
-    for feature in layer.getFeatures():
-        layer_id = feature.id()
-        
-        geometry = feature.geometry()
-        
-        # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
-        if geometry.isMultipart():
-            for polygon in geometry.asMultiPolygon():
 
-                result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon))
-                # as long as there are some results, clip them to the active layer using the clipping function
-                if total_records > 0:
-                    clipping(result_layer, layer, layer_id)
-                    # print("Clipping layer {layer_id} complete")
+    try:
+        layer_dialog = LayerDialog()
+        if layer_dialog.exec_() == QDialog.Accepted:
+            layer, layer_name = layer_dialog.get_selected_layer()
+            if layer:
+                print(f"Selected Layer: {layer_name}")
 
-        # if the polygon is not multi-part no need to loop through each polygon in the layer
+
+            # Iterate through each polygon in the active layer
+            for feature in layer.getFeatures():
+                layer_id = feature.id()
+                
+                geometry = feature.geometry()
+                
+                # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
+                if geometry.isMultipart():
+                    for polygon in geometry.asMultiPolygon():
+
+                        result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id)
+                        # as long as there are some results, clip them to the active layer using the clipping function
+                        if total_records > 0:
+                            clipping(result_layer, layer, layer_id)
+                            # print("Clipping layer {layer_id} complete")
+
+                # if the polygon is not multi-part no need to loop through each polygon in the layer
+                else:
+                    result_layer, total_records = create_gbif_layer(geometry, layer_id)
+
+                    if total_records > 0:
+                        # as long as there are some results, clip them to the active layer using the clipping function
+                        clipping(result_layer, layer, layer_id)
+                        # print("Clipping layer {layer_id} complete")
+            
+                print("Script complete")
         else:
-            result_layer, total_records = create_gbif_layer(geometry, layer_id)
+            treeRoot.removeChildNode(pyqgis_group)  
+            print("User clickec Cancel. Stopping script")
 
-            if total_records > 0:
-                # as long as there are some results, clip them to the active layer using the clipping function
-                clipping(result_layer, layer, layer_id)
-                # print("Clipping layer {layer_id} complete")
-    
-    print("Script complete")
+    except ValueError:
+        pass
 else:
+    treeRoot.removeChildNode(pyqgis_group)
     print("User clicked Cancel. Stopping script.")
