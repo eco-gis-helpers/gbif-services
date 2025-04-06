@@ -1,12 +1,12 @@
 import requests
-
 from qgis.core import (
     QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsFields
 )
-from qgis.PyQt.QtCore import QVariant
-from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox, QFormLayout
+from qgis.PyQt.QtCore import QVariant, QCoreApplication
+from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox, QFormLayout, QProgressDialog
 from qgis.gui import QgsMapLayerComboBox
 from qgis.core import QgsMapLayerProxyModel
+from PyQt5.QtCore import Qt
 
 projInstance = QgsProject.instance()
 
@@ -20,26 +20,22 @@ while treeRoot.findGroup(group_name):
     group_name = 'GBIF Occurrences-' + str(counter)
 pyqgis_group = treeRoot.insertGroup(0, group_name)
 
-# layer = iface.activeLayer()
-# layer_name = layer.name()
-
 # Function to fetch GBIF data
 def fetch_gbif_data(url):
     response = requests.get(url)
     return response.json()
 
-def create_gbif_layer(polygon, layer_id):
-    # Create an in-memory layer to store the GBIF data
-    result_layer = QgsVectorLayer('Point?crs=EPSG:4326', 'GBIF Occurrences-' +str(layer_id), 'memory')
+# Function to create and update the progress dialog
+def create_progress_dialog(total_estimate):
+    progress = QProgressDialog("Gathering GBIF Points...", "Cancel", 0, total_estimate)
+    progress.setWindowModality(Qt.WindowModal)  # so user cannot interact with the map while loading
+    progress.setMinimumDuration(0)  # Show dialog immediately
+    progress.setValue(0)
+    return progress
+
+def create_gbif_layer(polygon, layer_id, progress):
+    result_layer = QgsVectorLayer('Point?crs=EPSG:4326', f'GBIF Occurrences-{layer_id}', 'memory')
     provider = result_layer.dataProvider()
-
-    # Define the fields for the resulting layer
-    # using the occurence search API - here are the fields to choose from
-    # https://techdocs.gbif.org/en/openapi/v1/occurrence
-    # see "searing occurences" section and the GET /occurence/search dropdown
-
-    #TODO a way to search for one particular species vs. calling in all observations?
-    # similiar to the geohub_services scripts - the 'one_service_with_sql.py' script - we could construct a query based on user input
 
     fields = QgsFields()
     fields.append(QgsField('gbifID', QVariant.String))
@@ -49,63 +45,72 @@ def create_gbif_layer(polygon, layer_id):
     fields.append(QgsField('catalogNumber', QVariant.String))
     fields.append(QgsField('identifiedBy', QVariant.String))
     fields.append(QgsField('individualCount', QVariant.String))
-
     provider.addAttributes(fields)
     result_layer.updateFields()
 
-    # Get the bounding box of the polygon(s)
     extent = polygon.boundingBox()
+    min_x, min_y = extent.xMinimum(), extent.yMinimum()
+    max_x, max_y = extent.xMaximum(), extent.yMaximum()
 
-    min_x = extent.xMinimum()
-    min_y = extent.yMinimum()
-    max_x = extent.xMaximum()
-    max_y = extent.yMaximum()
-    
-    # URL for the GBIF API query with bounding box and limit (300)
-    base_url = (
+    # First get the total count
+    count_url = (
         'https://api.gbif.org/v1/occurrence/search?'
         f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
-        '&limit=300'
+        '&limit=0'
     )
-    
-    # Fetch records with pagination
+    count_data = fetch_gbif_data(count_url)
+    total_estimate = min(count_data.get('count', 0), 100000)
+    if total_estimate == 0:
+        return result_layer, 0
+
+    progress.setMaximum(total_estimate)
+    progress.setValue(0)
+
     offset = 0
-    total_records = 0
-    
+    added_records = 0
+
     while True:
-        url = f"{base_url}&offset={offset}"
+        url = (
+            'https://api.gbif.org/v1/occurrence/search?'
+            f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
+            f'&limit=300&offset={offset}'
+        )
         data = fetch_gbif_data(url)
-        
+
         if 'results' not in data or not data['results']:
-            break  # Exit the loop if no results are returned
-        
+            break
+
         for record in data['results']:
-            gbif_id = record.get('gbifID', 'Unknown')
-            species = record.get('species', 'Unknown')
-            country = record.get('country', 'Unknown')
-            event_date = record.get('eventDate', 'Unknown')
-            catalog_number = record.get('catalogNumber', 'Unknown')
-            identifier = record.get('identifiedBy', 'Unknown')
-            count = record.get('individualCount', 'Unknown')
-            
             lat = record.get('decimalLatitude')
             lon = record.get('decimalLongitude')
-            
+
             if lat is not None and lon is not None:
                 feature = QgsFeature()
                 feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(lon, lat)))
-                feature.setAttributes([gbif_id, species, country, event_date, catalog_number, identifier, count])
+                feature.setAttributes([ 
+                    record.get('gbifID', 'Unknown'),
+                    record.get('species', 'Unknown'),
+                    record.get('country', 'Unknown'),
+                    record.get('eventDate', 'Unknown'),
+                    record.get('catalogNumber', 'Unknown'),
+                    record.get('identifiedBy', 'Unknown'),
+                    record.get('individualCount', 'Unknown')
+                ])
                 provider.addFeatures([feature])
-        
-        total_records += len(data['results'])
+                added_records += 1
 
-        # Stop if no more data is returned
-        if len(data['results']) == 0:
+                if progress.wasCanceled():
+                    return None, 0
+
+                progress.setValue(added_records)
+                progress.setLabelText(f"Gathering GBIF Points... {added_records} / {total_estimate}")
+                QCoreApplication.processEvents()  # allow UI updates
+
+        if len(data['results']) < 300:
             break
+        offset += 300
 
-        offset += 300  # move to the next batch of 300 records
-    
-    return result_layer, total_records
+    return result_layer, added_records
 
 # function to clip the resulting gbif layer (from the query) with the active polygon(s) layer
 def clipping(input_layer, overlay_layer, layer_id):
@@ -193,36 +198,48 @@ if warn_dialog.exec_() == QDialog.Accepted:
             if layer:
                 print(f"Selected Layer: {layer_name}")
 
-
             # Iterate through each polygon in the active layer
             for feature in layer.getFeatures():
                 layer_id = feature.id()
                 
                 geometry = feature.geometry()
                 
+                # Get the bounding box and count the total records to be fetched
+                extent = geometry.boundingBox()
+                min_x, min_y = extent.xMinimum(), extent.yMinimum()
+                max_x, max_y = extent.xMaximum(), extent.yMaximum()
+                
+                count_url = (
+                    'https://api.gbif.org/v1/occurrence/search?'
+                    f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
+                    '&limit=0'
+                )
+                count_data = fetch_gbif_data(count_url)
+                total_estimate = min(count_data.get('count', 0), 100000)
+
+                # Initialize progress dialog
+                progress = create_progress_dialog(total_estimate)
+
                 # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
                 if geometry.isMultipart():
                     for polygon in geometry.asMultiPolygon():
-
-                        result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id)
+                        result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id, progress)
                         # as long as there are some results, clip them to the active layer using the clipping function
                         if total_records > 0:
                             clipping(result_layer, layer, layer_id)
-                            # print("Clipping layer {layer_id} complete")
 
                 # if the polygon is not multi-part no need to loop through each polygon in the layer
                 else:
-                    result_layer, total_records = create_gbif_layer(geometry, layer_id)
+                    result_layer, total_records = create_gbif_layer(geometry, layer_id, progress)
 
                     if total_records > 0:
                         # as long as there are some results, clip them to the active layer using the clipping function
                         clipping(result_layer, layer, layer_id)
-                        # print("Clipping layer {layer_id} complete")
-            
+
                 print("Script complete")
         else:
             treeRoot.removeChildNode(pyqgis_group)  
-            print("User clickec Cancel. Stopping script")
+            print("User clicked Cancel. Stopping script")
 
     except ValueError:
         pass
