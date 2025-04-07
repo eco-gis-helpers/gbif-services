@@ -5,7 +5,7 @@ from qgis.core import (
 from qgis.PyQt.QtCore import QVariant, QCoreApplication
 from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox, QFormLayout, QProgressDialog
 from qgis.gui import QgsMapLayerComboBox
-from qgis.core import QgsMapLayerProxyModel
+from qgis.core import QgsMapLayerProxyModel, QgsCoordinateTransform, QgsCoordinateReferenceSystem
 from PyQt5.QtCore import Qt
 
 projInstance = QgsProject.instance()
@@ -24,6 +24,11 @@ pyqgis_group = treeRoot.insertGroup(0, group_name)
 def fetch_gbif_data(url):
     response = requests.get(url)
     return response.json()
+    
+def transform_geometry_to_epsg4326(geometry, source_crs):
+    target_crs = QgsCoordinateReferenceSystem('EPSG:4326')
+    transform = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance())
+    return geometry.transform(transform)
 
 # Function to create and update the progress dialog for GBIF data
 def create_progress_dialog(total_estimate, task_name="Fetching GBIF Points..."):
@@ -230,6 +235,11 @@ if warn_dialog.exec_() == QDialog.Accepted:
                 layer_id = feature.id()
                 
                 geometry = feature.geometry()
+                source_crs = layer.crs()
+                geometry = QgsGeometry(geometry)
+
+                if source_crs.authid() != 'EPSG:4326':
+                    geometry.transform(QgsCoordinateTransform(source_crs, QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance()))
                 
                 # Get the bounding box and count the total records to be fetched
                 extent = geometry.boundingBox()
