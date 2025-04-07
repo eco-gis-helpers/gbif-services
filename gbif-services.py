@@ -46,6 +46,7 @@ def create_clipping_progress_dialog(total_count):
     progress.setValue(0)
     return progress
 
+# Function to create the GBIF Species occurrence point layer with particular attributes
 def create_gbif_layer(polygon, layer_id, progress):
     result_layer = QgsVectorLayer('Point?crs=EPSG:4326', f'GBIF Occurrences-{layer_id}', 'memory')
     provider = result_layer.dataProvider()
@@ -161,15 +162,17 @@ def clipping(input_layer, overlay_layer, layer_id):
 
     return pyqgis_group.addLayer(layer_clip_result)
 
-# simple warning dialog
+# warning dialog
 class WarningDialog(QDialog):
-    def __init__(self, warn_str):
+    def __init__(self):
         super().__init__()
+
+        self.warn_str = 'Please note large queries will take longer and may crash QGIS. \n A maximum of 100,000 records can be retrieved at one time.'
 
         self.setWindowTitle("Query Warning")
         layout = QVBoxLayout()
         
-        warning_label = QLabel(warn_str)
+        warning_label = QLabel(self.warn_str)
         layout.addWidget(warning_label)
         
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -179,9 +182,7 @@ class WarningDialog(QDialog):
         layout.addWidget(button_box)
         self.setLayout(layout)
 
-
-warn_str = 'Please note large queries will take longer and may crash QGIS. \n A maximum of 100,000 records can be retrieved at one time.'
-warn_dialog = WarningDialog(warn_str)
+warn_dialog = WarningDialog()
 
 class LayerDialog(QDialog):
     def __init__(self):
@@ -221,7 +222,7 @@ class LayerDialog(QDialog):
         return None, None
 
 if warn_dialog.exec_() == QDialog.Accepted:
-    print("Warning accepted. Querying GBIF API. Please be patient, this step can take a few minutes")
+    print("Warning accepted. Querying GBIF API. Please be patient, the next step can take a few minutes")
 
     try:
         layer_dialog = LayerDialog()
