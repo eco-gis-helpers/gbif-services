@@ -1,4 +1,5 @@
 import requests
+from urllib import request
 from qgis.core import (
     QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsFields
 )
@@ -19,6 +20,13 @@ while treeRoot.findGroup(group_name):
     counter += 1
     group_name = 'GBIF Occurrences-' + str(counter)
 pyqgis_group = treeRoot.insertGroup(0, group_name)
+
+def internet_on():
+    try:
+        request.urlopen('https://api.gbif.org/', timeout=1)
+        return True
+    except request.URLError as err: 
+        return False
 
 # Function to fetch GBIF data
 def fetch_gbif_data(url):
@@ -212,7 +220,7 @@ class LayerDialog(QDialog):
             self.accept()
         else:
             print("No layer selected!")
-            iface.messageBar().pushMessage("Error", "No layer selected!", level=Qgis.Critical)
+            iface.messageBar().pushMessage("Error", "No layer selected!", level=Qgis.Info)
             raise ValueError("No layer selected!")
 
     def get_selected_layer(self):
@@ -222,75 +230,84 @@ class LayerDialog(QDialog):
         return None, None
 
 if warn_dialog.exec_() == QDialog.Accepted:
-    print("Warning accepted. Querying GBIF API. Please be patient, the next step can take a few minutes")
 
-    try:
-        layer_dialog = LayerDialog()
-        if layer_dialog.exec_() == QDialog.Accepted:
-            layer, layer_name = layer_dialog.get_selected_layer()
-            if layer:
-                print(f"Selected Layer: {layer_name}")
+        print("Warning accepted. Querying GBIF API. Please be patient, the next step can take a few minutes")
 
-            # Iterate through each polygon in the active layer
-            for feature in layer.getFeatures():
-                layer_id = feature.id()
-                
-                geometry = feature.geometry()
-                source_crs = layer.crs()
-                geometry = QgsGeometry(geometry)
+        try:
+            if internet_on():
+                print("API Connection Successful")
 
-                if source_crs.authid() != 'EPSG:4326':
-                    geometry.transform(QgsCoordinateTransform(source_crs, QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance()))
-                
-                # Get the bounding box and count the total records to be fetched
-                extent = geometry.boundingBox()
-                min_x, min_y = extent.xMinimum(), extent.yMinimum()
-                max_x, max_y = extent.xMaximum(), extent.yMaximum()
-                
-                count_url = (
-                    'https://api.gbif.org/v1/occurrence/search?'
-                    f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
-                    '&limit=0'
-                )
-                count_data = fetch_gbif_data(count_url)
-                total_estimate = min(count_data.get('count', 0), 100000)
+                layer_dialog = LayerDialog()
+                if layer_dialog.exec_() == QDialog.Accepted:
+                    layer, layer_name = layer_dialog.get_selected_layer()
+                    if layer:
+                        print(f"Selected Layer: {layer_name}")
 
-                # Initialize progress dialog
-                progress = create_progress_dialog(total_estimate)
+                    # Iterate through each polygon in the active layer
+                    for feature in layer.getFeatures():
+                        layer_id = feature.id()
+                        
+                        geometry = feature.geometry()
+                        source_crs = layer.crs()
+                        geometry = QgsGeometry(geometry)
 
-                # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
-                if geometry.isMultipart():
-                    for polygon in geometry.asMultiPolygon():
-                        result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id, progress)
-                        # as long as there are some results, clip them to the active layer using the clipping function
-                        if total_records > 0:
-                            clipping(result_layer, layer, layer_id)
+                        if source_crs.authid() != 'EPSG:4326':
+                            geometry.transform(QgsCoordinateTransform(source_crs, QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance()))
+                        
+                        # Get the bounding box and count the total records to be fetched
+                        extent = geometry.boundingBox()
+                        min_x, min_y = extent.xMinimum(), extent.yMinimum()
+                        max_x, max_y = extent.xMaximum(), extent.yMaximum()
+                        
+                        count_url = (
+                            'https://api.gbif.org/v1/occurrence/search?'
+                            f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
+                            '&limit=0'
+                        )
+                        count_data = fetch_gbif_data(count_url)
+                        total_estimate = min(count_data.get('count', 0), 100000)
 
-                # if the polygon is not multi-part no need to loop through each polygon in the layer
+                        # Initialize progress dialog
+                        progress = create_progress_dialog(total_estimate)
+
+                        # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
+                        if geometry.isMultipart():
+                            for polygon in geometry.asMultiPolygon():
+                                result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id, progress)
+                                # as long as there are some results, clip them to the active layer using the clipping function
+                                if total_records > 0:
+                                    clipping(result_layer, layer, layer_id)
+
+                        # if the polygon is not multi-part no need to loop through each polygon in the layer
+                        else:
+                            result_layer, total_records = create_gbif_layer(geometry, layer_id, progress)
+
+                            if result_layer is None:
+                                print("Script cancelled during GBIF layer creation.")
+                                treeRoot.removeChildNode(pyqgis_group)  
+                                break
+
+                            if total_records > 0:
+                                # as long as there are some results, clip them to the active layer using the clipping function
+                                clipping(result_layer, layer, layer_id)
+
+                        if progress.wasCanceled():
+                            print("Script cancelled during main loop.")
+                            treeRoot.removeChildNode(pyqgis_group)  
+                            break
+
+                        print("Script complete")
                 else:
-                    result_layer, total_records = create_gbif_layer(geometry, layer_id, progress)
-
-                    if result_layer is None:
-                        print("Script cancelled during GBIF layer creation.")
-                        treeRoot.removeChildNode(pyqgis_group)  
-                        break
-
-                    if total_records > 0:
-                        # as long as there are some results, clip them to the active layer using the clipping function
-                        clipping(result_layer, layer, layer_id)
-
-                if progress.wasCanceled():
-                    print("Script cancelled during main loop.")
                     treeRoot.removeChildNode(pyqgis_group)  
-                    break
+                    print("User clicked Cancel. Stopping script")
+            else:
+                treeRoot.removeChildNode(pyqgis_group)
+                iface.messageBar().pushMessage("Error", "Could not connect to the network", level=Qgis.Critical)
+                print("A connection to the internet could not be established. \n" \
+                "Please check your network connection and try again")
 
-                print("Script complete")
-        else:
-            treeRoot.removeChildNode(pyqgis_group)  
-            print("User clicked Cancel. Stopping script")
-
-    except ValueError:
-        pass
+        except ValueError:
+            pass
 else:
     treeRoot.removeChildNode(pyqgis_group)
     print("User clicked Cancel. Stopping script.")
