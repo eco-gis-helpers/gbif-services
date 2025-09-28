@@ -4,10 +4,16 @@ from qgis.core import (
     QgsProject, QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPointXY, QgsFields
 )
 from qgis.PyQt.QtCore import QVariant, QCoreApplication
-from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox, QFormLayout, QProgressDialog
+from qgis.PyQt.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QDialogButtonBox, QFormLayout, QProgressDialog, 
+    QLineEdit, QWidget
+)
 from qgis.gui import QgsMapLayerComboBox
 from qgis.core import QgsMapLayerProxyModel, QgsCoordinateTransform, QgsCoordinateReferenceSystem
 from PyQt5.QtCore import Qt
+
+SPECIES_NAME = "Ammodramus savannarum"
 
 projInstance = QgsProject.instance()
 
@@ -43,6 +49,7 @@ def create_progress_dialog(total_estimate, task_name="Fetching GBIF Points..."):
     progress = QProgressDialog(task_name, "Cancel", 0, total_estimate)
     progress.setWindowModality(Qt.WindowModal)  # Modal window so user cannot interact with the map while loading
     progress.setMinimumDuration(0)  # Show dialog immediately
+    progress.setMinimumWidth(300)
     progress.setValue(0)
     return progress
 
@@ -55,7 +62,16 @@ def create_clipping_progress_dialog(total_count):
     return progress
 
 # Function to create the GBIF Species occurrence point layer with particular attributes
-def create_gbif_layer(polygon, layer_id, progress):
+def create_gbif_layer(
+                        polygon, 
+                        layer_id, 
+                        species_name, 
+                        start_year, 
+                        end_year, 
+                        progress
+                      ):
+    
+
     result_layer = QgsVectorLayer('Point?crs=EPSG:4326', f'GBIF Occurrences-{layer_id}', 'memory')
     provider = result_layer.dataProvider()
 
@@ -79,6 +95,8 @@ def create_gbif_layer(polygon, layer_id, progress):
         'https://api.gbif.org/v1/occurrence/search?'
         f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
         '&limit=0'
+        f'&scientificName={species_name}'
+        f'&year={start_year},{end_year}'
     )
     count_data = fetch_gbif_data(count_url)
     total_estimate = min(count_data.get('count', 0), 100000)
@@ -96,6 +114,8 @@ def create_gbif_layer(polygon, layer_id, progress):
             'https://api.gbif.org/v1/occurrence/search?'
             f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
             f'&limit=300&offset={offset}'
+            f'&scientificName={species_name}'
+            f'&year={start_year},{end_year}'
         )
         data = fetch_gbif_data(url)
 
@@ -196,16 +216,49 @@ class LayerDialog(QDialog):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Select Layer for Query")
+        self.setWindowTitle("Select Filters for Query")
         self.setMinimumWidth(500)
-        self.setMinimumHeight(100)
+        self.setMinimumHeight(200)
 
         self.map_layer_combo_box = QgsMapLayerComboBox()
         self.map_layer_combo_box.setCurrentIndex(-1)
         self.map_layer_combo_box.setFilters(QgsMapLayerProxyModel.PolygonLayer)
 
+        # Filter by Scientific Name
+        self.species_label = QLabel ("Scientific Name: ")
+        self.species_text = QLineEdit()
+        # self.species_text.setMinimumHeight(70)
+        # self.species_text.setMinimumWidth(500)
+        self.species_text.setPlaceholderText("Filter by Scientific Name: (or leave blank for no filter)")
+        self.species_text.setToolTip("Filter by Scientific Name: (or leave blank for no filter)")
+
+        self.species_widget = QWidget()
+        self.species_layout = QHBoxLayout(self.species_widget)
+
+        self.species_layout.addWidget(self.species_label)
+        self.species_layout.addWidget(self.species_text)
+
+        # Filter by Year Range
+        self.start_year_label = QLabel("Start Year: ")
+        self.start_year = QLineEdit()
+
+        self.end_year_label = QLabel("End Year: ")
+        self.end_year = QLineEdit()
+
+        self.date_range_widget = QWidget()
+        self.date_range_layout = QHBoxLayout(self.date_range_widget)
+
+        self.date_range_layout.addWidget(self.start_year_label)
+        self.date_range_layout.addWidget(self.start_year)
+        self.date_range_layout.addWidget(self.end_year_label)
+        self.date_range_layout.addWidget(self.end_year)
+
         layout = QFormLayout()
+
         layout.addWidget(self.map_layer_combo_box)
+        layout.addWidget(self.species_widget)
+        layout.addWidget(self.date_range_widget)
+
         self.setLayout(layout)
         self.show() 
 
@@ -228,6 +281,16 @@ class LayerDialog(QDialog):
         if layer:
             return layer, layer.name()
         return None, None
+    
+    def get_species(self):
+        SPECIES_NAME = self.species_text.text()
+        return SPECIES_NAME
+    
+    def get_date_range(self):
+        start_year = self.start_year.text()
+        end_year = self.end_year.text()
+
+        return start_year, end_year
 
 if warn_dialog.exec_() == QDialog.Accepted:
 
@@ -240,6 +303,8 @@ if warn_dialog.exec_() == QDialog.Accepted:
                 layer_dialog = LayerDialog()
                 if layer_dialog.exec_() == QDialog.Accepted:
                     layer, layer_name = layer_dialog.get_selected_layer()
+                    species_name = layer_dialog.get_species()
+                    start_year, end_year = layer_dialog.get_date_range()
                     if layer:
                         print(f"Selected Layer: {layer_name}")
 
@@ -263,6 +328,8 @@ if warn_dialog.exec_() == QDialog.Accepted:
                             'https://api.gbif.org/v1/occurrence/search?'
                             f'geometry=POLYGON(({min_x}%20{min_y},{max_x}%20{min_y},{max_x}%20{max_y},{min_x}%20{max_y},{min_x}%20{min_y}))'
                             '&limit=0'
+                            f'&scientificName={species_name}'
+                            f'&year={start_year},{end_year}'
                         )
                         count_data = fetch_gbif_data(count_url)
                         total_estimate = min(count_data.get('count', 0), 100000)
@@ -273,14 +340,25 @@ if warn_dialog.exec_() == QDialog.Accepted:
                         # if the polygon is multi-part, we will call the create_gbif_layer function for part of the polygon
                         if geometry.isMultipart():
                             for polygon in geometry.asMultiPolygon():
-                                result_layer, total_records = create_gbif_layer(QgsGeometry.fromPolygonXY(polygon), layer_id, progress)
+                                result_layer, total_records = create_gbif_layer(
+                                                                                QgsGeometry.fromPolygonXY(polygon), 
+                                                                                layer_id, species_name, 
+                                                                                start_year, 
+                                                                                end_year, 
+                                                                                progress
+                                                                                )
                                 # as long as there are some results, clip them to the active layer using the clipping function
                                 if total_records > 0:
                                     clipping(result_layer, layer, layer_id)
 
                         # if the polygon is not multi-part no need to loop through each polygon in the layer
                         else:
-                            result_layer, total_records = create_gbif_layer(geometry, layer_id, progress)
+                            result_layer, total_records = create_gbif_layer(geometry, 
+                                                                            layer_id, 
+                                                                            species_name, 
+                                                                            start_year,
+                                                                            end_year,
+                                                                            progress)
 
                             if result_layer is None:
                                 print("Script cancelled during GBIF layer creation.")
@@ -296,7 +374,7 @@ if warn_dialog.exec_() == QDialog.Accepted:
                             treeRoot.removeChildNode(pyqgis_group)  
                             break
 
-                        print("Script complete")
+                    print("Script complete")
                 else:
                     treeRoot.removeChildNode(pyqgis_group)  
                     print("User clicked Cancel. Stopping script")
