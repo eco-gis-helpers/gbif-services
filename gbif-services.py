@@ -13,8 +13,6 @@ from qgis.gui import QgsMapLayerComboBox
 from qgis.core import QgsMapLayerProxyModel, QgsCoordinateTransform, QgsCoordinateReferenceSystem
 from PyQt5.QtCore import Qt
 
-SPECIES_NAME = "Ammodramus savannarum"
-
 projInstance = QgsProject.instance()
 
 # Add an incrementing pyqgis group each time the script is run
@@ -220,77 +218,75 @@ class LayerDialog(QDialog):
         self.setMinimumWidth(500)
         self.setMinimumHeight(200)
 
+        # Map Layer Selector
         self.map_layer_combo_box = QgsMapLayerComboBox()
         self.map_layer_combo_box.setCurrentIndex(-1)
         self.map_layer_combo_box.setFilters(QgsMapLayerProxyModel.PolygonLayer)
 
-        # Filter by Scientific Name
-        self.species_label = QLabel ("Scientific Name: ")
+        # Scientific Name Filter
         self.species_text = QLineEdit()
-        # self.species_text.setMinimumHeight(70)
-        # self.species_text.setMinimumWidth(500)
-        self.species_text.setPlaceholderText("Filter by Scientific Name: (or leave blank for no filter)")
-        self.species_text.setToolTip("Filter by Scientific Name: (or leave blank for no filter)")
+        self.species_text.setPlaceholderText("Filter by scientific name (or leave blank)")
+        self.species_text.setToolTip("Filter by scientific name (or leave blank)")
 
-        self.species_widget = QWidget()
-        self.species_layout = QHBoxLayout(self.species_widget)
-
-        self.species_layout.addWidget(self.species_label)
-        self.species_layout.addWidget(self.species_text)
-
-        # Filter by Year Range
-        self.start_year_label = QLabel("Start Year: ")
+        # Year Range Filter
         self.start_year = QLineEdit()
+        self.start_year.setPlaceholderText("e.g. 2000")
+        self.start_year.setMaximumWidth(80)
 
-        self.end_year_label = QLabel("End Year: ")
         self.end_year = QLineEdit()
+        self.end_year.setPlaceholderText("e.g. 2025")
+        self.end_year.setMaximumWidth(80)
 
-        self.date_range_widget = QWidget()
-        self.date_range_layout = QHBoxLayout(self.date_range_widget)
+        year_range_widget = QWidget()
+        year_range_layout = QHBoxLayout(year_range_widget)
+        year_range_layout.setContentsMargins(0, 0, 0, 0)
+        year_range_layout.setSpacing(10)
+        year_range_layout.addWidget(QLabel("Start:"))
+        year_range_layout.addWidget(self.start_year)
+        year_range_layout.addWidget(QLabel("End:"))
+        year_range_layout.addWidget(self.end_year)
+        year_range_layout.addStretch()
 
-        self.date_range_layout.addWidget(self.start_year_label)
-        self.date_range_layout.addWidget(self.start_year)
-        self.date_range_layout.addWidget(self.end_year_label)
-        self.date_range_layout.addWidget(self.end_year)
+        # Form Layout
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignRight)
+        form_layout.setFormAlignment(Qt.AlignTop)
+        form_layout.setHorizontalSpacing(20)
+        form_layout.setVerticalSpacing(12)
 
-        layout = QFormLayout()
+        form_layout.addRow("Polygon Layer:", self.map_layer_combo_box)
+        form_layout.addRow("Scientific Name:", self.species_text)
+        form_layout.addRow("Year Range:", year_range_widget)
 
-        layout.addWidget(self.map_layer_combo_box)
-        layout.addWidget(self.species_widget)
-        layout.addWidget(self.date_range_widget)
-
-        self.setLayout(layout)
-        self.show() 
-
+        # OK / Cancel buttons
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.button_box.accepted.connect(self.validate_and_accept)
         self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
+
+        # Main Layout
+        main_layout = QVBoxLayout(self)
+        main_layout.addLayout(form_layout)
+        main_layout.addStretch()
+        main_layout.addWidget(self.button_box, alignment=Qt.AlignRight)
 
     def validate_and_accept(self):
         selected_layer = self.map_layer_combo_box.currentLayer()
         if selected_layer:
             self.accept()
         else:
-            print("No layer selected!")
             iface.messageBar().pushMessage("Error", "No layer selected!", level=Qgis.Info)
             raise ValueError("No layer selected!")
 
     def get_selected_layer(self):
         layer = self.map_layer_combo_box.currentLayer()
-        if layer:
-            return layer, layer.name()
-        return None, None
-    
-    def get_species(self):
-        SPECIES_NAME = self.species_text.text()
-        return SPECIES_NAME
-    
-    def get_date_range(self):
-        start_year = self.start_year.text()
-        end_year = self.end_year.text()
+        return (layer, layer.name()) if layer else (None, None)
 
-        return start_year, end_year
+    def get_species(self):
+        return self.species_text.text()
+
+    def get_date_range(self):
+        return self.start_year.text(), self.end_year.text()
+
 
 if warn_dialog.exec_() == QDialog.Accepted:
 
